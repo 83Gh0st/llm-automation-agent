@@ -20,24 +20,42 @@ import json
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional
 from datetime import datetime
+from bs4 import BeautifulSoup
+from PIL import Image
+import pandas as pd
+from io import BytesIO
+import markdown
+import git
+import sqlite3
+import duckdb
+import shutil
+import csv
 
 load_dotenv()
 
 app = FastAPI()
 
-# ✅ Enable CORS
+DATA_DIR = "/data"
+
+# Ensure security constraints (B1, B2)
+def ensure_security(filepath):
+    if not filepath.startswith(DATA_DIR):
+        raise HTTPException(status_code=403, detail="Access outside /data is not allowed.")
+    return filepath
+
+#  Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], 
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ LLM Proxy URL
+# LLM Proxy URL
 LLM_PROXY_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
 
-# ✅ Define Tools for LLM Proxy
+#  Define Tools for LLM Proxy
 tools = [
     {
         "type": "function",
@@ -57,6 +75,127 @@ tools = [
                 "required": ["script_url", "args"]
             }
         }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "fetch_api_data",
+        "description": "Fetch data from an API and save it securely within /data",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "api_url": { "type": "string", "description": "The API endpoint to fetch data from" },
+            "save_path": { "type": "string", "description": "The path within /data to save the response" }
+          },
+          "required": ["api_url", "save_path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "clone_git_repo",
+        "description": "Clone a Git repository and make a commit",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "repo_url": { "type": "string", "description": "The Git repository URL to clone" },
+            "commit_message": { "type": "string", "description": "The commit message for the change" }
+          },
+          "required": ["repo_url", "commit_message"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "run_sql_query",
+        "description": "Execute a SQL query on SQLite or DuckDB while enforcing security constraints",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "db_type": { "type": "string", "enum": ["sqlite", "duckdb"], "description": "The database type" },
+            "query": { "type": "string", "description": "The SQL query to execute" },
+            "db_path": { "type": "string", "description": "Path within /data for the database file" }
+          },
+          "required": ["db_type", "query", "db_path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "scrape_website",
+        "description": "Extract data from a website and store it securely",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "description": "The URL of the website to scrape" },
+            "save_path": { "type": "string", "description": "Path within /data to save extracted data" }
+          },
+          "required": ["url", "save_path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "process_image",
+        "description": "Compress or resize an image while keeping it within /data",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "image_path": { "type": "string", "description": "Path to the image within /data" },
+            "operation": { "type": "string", "enum": ["compress", "resize"], "description": "Operation to perform" },
+            "size": { "type": "string", "description": "New size (if resizing, e.g., 800x600)" }
+          },
+          "required": ["image_path", "operation"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "transcribe_audio",
+        "description": "Transcribe an MP3 file into text securely",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "audio_path": { "type": "string", "description": "Path to the MP3 file within /data" }
+          },
+          "required": ["audio_path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "convert_markdown_to_html",
+        "description": "Convert Markdown to HTML and save it securely",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "markdown_path": { "type": "string", "description": "Path to the Markdown file within /data" },
+            "html_path": { "type": "string", "description": "Path to save the HTML output within /data" }
+          },
+          "required": ["markdown_path", "html_path"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "filter_csv_data",
+        "description": "Write an API endpoint that filters CSV data and returns JSON",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "csv_path": { "type": "string", "description": "Path to the CSV file within /data" },
+            "filter_conditions": { "type": "string", "description": "Conditions to filter CSV data" }
+          },
+          "required": ["csv_path", "filter_conditions"]
+        }
+      }
     },
     {
         "type": "function",
@@ -234,7 +373,7 @@ tools = [
 
 from dateutil import parser  # New import for improved date parsing
 
-# ✅ Date Parsing Function (Supports Multiple Formats)
+#  Date Parsing Function (Supports Multiple Formats)
 def parse_date(date_str):
     try:
         return parser.parse(date_str.strip())  # Uses dateutil to handle multiple formats
@@ -245,47 +384,127 @@ def parse_date(date_str):
 import cv2
 import pytesseract
 import re
+# ------------------- Core Function Implementations -------------------
+
+def fetch_api_data(url: str, filename: str):
+    response = requests.get(url)
+    if response.status_code == 200:
+        filepath = ensure_security(os.path.join(DATA_DIR, filename))
+        with open(filepath, "w", encoding="utf-8") as file:
+            file.write(response.text)
+        return {"message": "Data saved successfully", "file": filepath}
+    raise HTTPException(status_code=response.status_code, detail="Failed to fetch data")
+
+def clone_git_repo(repo_url: str, commit_message: str):
+    repo_name = repo_url.split("/")[-1].replace(".git", "")
+    repo_path = ensure_security(os.path.join(DATA_DIR, repo_name))
+
+    if os.path.exists(repo_path):
+        shutil.rmtree(repo_path)
+
+    repo = git.Repo.clone_from(repo_url, repo_path)
+    file_path = os.path.join(repo_path, "dummy.txt")
+
+    with open(file_path, "w") as f:
+        f.write("Commit from FastAPI agent")
+
+    repo.git.add(all=True)
+    repo.git.commit("-m", commit_message)
+    
+    return {"message": "Repo cloned and committed", "repo": repo_path}
+
+def run_sql_query(db_type: str, db_path: str, query: str):
+    db_path = ensure_security(os.path.join(DATA_DIR, db_path))
+
+    if db_type == "sqlite":
+        conn = sqlite3.connect(db_path)
+    elif db_type == "duckdb":
+        conn = duckdb.connect(database=db_path)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid database type")
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        conn.commit()
+        return {"message": "Query executed", "results": results}
+    finally:
+        conn.close()
+
+def scrape_website(url: str):
+    response = requests.get(url)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, "html.parser")
+        return {"title": soup.title.string, "body": soup.get_text()[:500]}  
+    raise HTTPException(status_code=response.status_code, detail="Failed to fetch website")
+
+def process_image(image_url: str, width: int, height: int):
+    response = requests.get(image_url)
+    if response.status_code == 200:
+        image = Image.open(BytesIO(response.content))
+        image = image.resize((width, height))
+        filepath = ensure_security(os.path.join(DATA_DIR, "resized_image.jpg"))
+        image.save(filepath, "JPEG", quality=85)
+        return {"message": "Image processed", "file": filepath}
+    raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
+
+def transcribe_audio(audio_path: str):
+    audio_path = ensure_security(os.path.join(DATA_DIR, audio_path))
+
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail="Audio file not found")
+
+    model = whisper.load_model("base")
+    result = model.transcribe(audio_path)
+    return {"message": "Transcription completed", "transcription": result["text"]}
+
+def convert_markdown(md_content: str):
+    html_content = markdown.markdown(md_content)
+    return {"message": "Markdown converted", "html": html_content}
+
+def filter_csv(csv_path: str, column: str, value: str):
+    csv_path = ensure_security(os.path.join(DATA_DIR, csv_path))
+
+    if not os.path.exists(csv_path):
+        raise HTTPException(status_code=404, detail="CSV file not found")
+
+    df = pd.read_csv(csv_path)
+    if column not in df.columns:
+        raise HTTPException(status_code=400, detail="Column not found in CSV")
+
+    filtered_df = df[df[column] == value]
+    return json.loads(filtered_df.to_json(orient="records"))
 
 def extract_credit_card_from_image(image_path: str) -> str:
-    """
-    Extracts a credit card number from an image using OCR.
-    
-    Parameters:
-        image_path (str): Path to the image file containing the credit card.
-    
-    Returns:
-        str: The extracted credit card number as a continuous string (no spaces).
-    """
-    # Load image in grayscale for better OCR performance
-    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
 
+    # Load image in grayscale
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    
     if image is None:
         raise ValueError(f"Could not open image: {image_path}")
 
-    # Preprocess the image (optional, improves accuracy)
-    image = cv2.GaussianBlur(image, (5, 5), 0)  # Reduce noise
-    _, image = cv2.threshold(image, 150, 255, cv2.THRESH_BINARY)  # Improve contrast
+    # Preprocessing
+    image = cv2.GaussianBlur(image, (3, 3), 0)  # Reduce noise
+    image = cv2.adaptiveThreshold(image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                  cv2.THRESH_BINARY, 11, 2)
 
     # Perform OCR
     extracted_text = pytesseract.image_to_string(image, config='--psm 6')
 
-    # Use regex to find a valid credit card number (typically 16 digits)
-    match = re.search(r"\b(?:\d[ -]*?){13,19}\b", extracted_text)
-    
+    # Use regex to find a valid credit card number (16 digits)
+    match = re.search(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b", extracted_text)
+
     if match:
         return re.sub(r"\D", "", match.group())  # Remove non-digit characters
+    
     return ""
+
 
 import sqlite3
 
 def calculate_total_sales(db_path: str, output_file: str) -> None:
-    """
-    Calculates the total sales for the 'Gold' ticket type in an SQLite database.
-    
-    Parameters:
-        db_path (str): Path to the SQLite database.
-        output_file (str): Path to save the total sales amount.
-    """
+
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -310,13 +529,7 @@ from sentence_transformers import SentenceTransformer
 import numpy as np
 
 def find_most_similar_pair(file_path: str, output_file: str) -> None:
-    """
-    Finds the most similar pair of comments based on embeddings and writes them to a file.
-    
-    Parameters:
-        file_path (str): Path to the file containing comments (one per line).
-        output_file (str): Path to save the most similar pair of comments.
-    """
+
     # Load comments
     with open(file_path, "r") as f:
         comments = [line.strip() for line in f if line.strip()]
@@ -345,15 +558,7 @@ def find_most_similar_pair(file_path: str, output_file: str) -> None:
 import re
 
 def extract_email_from_text(text: str) -> str:
-    """
-    Extracts the sender's email address from the given email text.
-    
-    Parameters:
-        text (str): The content of an email message.
-    
-    Returns:
-        str: The extracted email address if found, otherwise an empty string.
-    """
+  
     email_pattern = re.compile(r"From:\s*.*?<?([\w\.-]+@[\w\.-]+\.\w+)>?", re.IGNORECASE)
     match = email_pattern.search(text)
     
@@ -363,18 +568,14 @@ def extract_email_from_text(text: str) -> str:
 
 
 
-# ✅ Task Execution Endpoint
+#  Task Execution Endpoint
 @app.post("/run")
 def task_runner(
     task: Optional[str] = Query(None, description="Task to execute"),  
     email: Optional[str] = Query(None, description="User email"),
     request_body: Optional[Dict[str, Any]] = Body(None)
 ):
-    """
-    Runs a predefined task or delegates to LLM Proxy for interpretation.
-    Supports both query parameters and JSON request body.
-    """
-    
+   
     task_value = request_body.get("task") if request_body else task
     email_value = request_body.get("email") if request_body else email
 
@@ -429,9 +630,22 @@ def task_runner(
                     raise HTTPException(status_code=404, detail="File not found")
 
                 try:
-                    subprocess.run(["npx", "prettier@3.4.2", "--write", file_path], check=True)
+                    process = subprocess.run(
+                        ["npx", "prettier@3.4.2", "--write", file_path],
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+
+                    with open(file_path, "r") as file:
+                        formatted_content = file.read()
+
+                    return {
+                        "formatted_content": formatted_content
+                    }
+
                 except subprocess.CalledProcessError as e:
-                    raise HTTPException(status_code=500, detail=f"Prettier formatting failed: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Prettier formatting failed: {e.stderr}")
 
             elif function_name == "count_wednesdays":
                 file_path = os.path.abspath(arguments["file_path"])
@@ -551,7 +765,8 @@ def task_runner(
                     with open(comments_file, "r") as file:
                         comments = [line.strip() for line in file]
 
-                    similar_pair = find_most_similar_pair(comments)
+                    similar_pair = find_most_similar_pair("/data/comments.txt", "/data/comments-similar.txt")
+
 
                     with open(output_file, "w") as out_file:
                         out_file.write("\n".join(similar_pair))
@@ -576,12 +791,10 @@ def task_runner(
         raise HTTPException(status_code=500, detail=f"LLM Task Execution Failed: {str(e)}")
 
     return response_data
-# ✅ API to Read Files
+#  API to Read Files
 @app.get("/read")
 def read_file(path: str = Query(..., description="Path of the file to read")):
-    """
-    Reads the contents of a file with error handling.
-    """
+
     try:
         path = os.path.abspath(path)
         if not os.path.exists(path):
@@ -596,7 +809,7 @@ def read_file(path: str = Query(..., description="Path of the file to read")):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-# ✅ Run API Server
+# Run API Server
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
