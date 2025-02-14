@@ -3,7 +3,7 @@ FROM python:3.12-slim-bookworm
 
 # Install required system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates nodejs npm sqlite3 tesseract-ocr poppler-utils \
+    curl ca-certificates nodejs npm sqlite3 tesseract-ocr poppler-utils git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install `uv`
@@ -19,11 +19,12 @@ WORKDIR /app
 # Copy project files
 COPY . /app
 
-# Install Python dependencies **system-wide**
+# Install Python dependencies system-wide
 RUN uv pip install --system \
     fastapi uvicorn requests python-dotenv \
     pillow pytesseract openai tiktoken numpy pandas \
-    sentence-transformers sqlite-utils
+    sentence-transformers sqlite-utils whisper \
+    duckdb markdown gitpython beautifulsoup4
 
 # Ensure `npx` works by installing Prettier globally
 RUN npm install -g prettier@3.4.2
