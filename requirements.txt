@@ -1,2 +1,11 @@
-flask 
+fastapi
+uvicorn
 requests
+pydantic
+python-dotenv
+python-dateutil 
+pytesseract
+opencv-python
+sentence-transformers 
+numpy
+
