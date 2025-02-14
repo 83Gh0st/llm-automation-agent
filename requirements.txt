@@ -4,8 +4,16 @@ requests
 pydantic
 python-dotenv
 python-dateutil 
-pytesseract
+
 opencv-python
 sentence-transformers 
 numpy
 
+pytesseract
+beautifulsoup4
+Pillow
+markdown
+gitpython
+  # (built-in, no need to install separately)
+duckdb
+pandas
