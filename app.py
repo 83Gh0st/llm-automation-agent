@@ -46,7 +46,7 @@ def ensure_security(filepath):
 #  Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],  # Change this to specific origins for security
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -449,15 +449,7 @@ def process_image(image_url: str, width: int, height: int):
         return {"message": "Image processed", "file": filepath}
     raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
 
-def transcribe_audio(audio_path: str):
-    audio_path = ensure_security(os.path.join(DATA_DIR, audio_path))
 
-    if not os.path.exists(audio_path):
-        raise HTTPException(status_code=404, detail="Audio file not found")
-
-    model = whisper.load_model("base")
-    result = model.transcribe(audio_path)
-    return {"message": "Transcription completed", "transcription": result["text"]}
 
 def convert_markdown(md_content: str):
     html_content = markdown.markdown(md_content)
@@ -525,34 +517,6 @@ def calculate_total_sales(db_path: str, output_file: str) -> None:
     finally:
         conn.close()
 
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-def find_most_similar_pair(file_path: str, output_file: str) -> None:
-
-    # Load comments
-    with open(file_path, "r") as f:
-        comments = [line.strip() for line in f if line.strip()]
-    
-    if len(comments) < 2:
-        raise ValueError("Not enough comments to compare.")
-
-    # Load a sentence embedding model (e.g., all-MiniLM)
-    model = SentenceTransformer("all-MiniLM-L6-v2")
-    embeddings = model.encode(comments, convert_to_numpy=True)
-
-    # Compute cosine similarity matrix
-    similarity_matrix = np.dot(embeddings, embeddings.T)
-
-    # Find the most similar pair (excluding self-comparison)
-    np.fill_diagonal(similarity_matrix, -np.inf)
-    most_similar_indices = np.unravel_index(np.argmax(similarity_matrix), similarity_matrix.shape)
-
-    comment1, comment2 = comments[most_similar_indices[0]], comments[most_similar_indices[1]]
-
-    # Write to output file
-    with open(output_file, "w") as out_file:
-        out_file.write(f"{comment1}\n{comment2}")
 
 
 import re
@@ -757,22 +721,6 @@ def task_runner(
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"Error extracting credit card number: {str(e)}")
 
-            elif function_name == "find_most_similar_comments":
-                comments_file = os.path.abspath(arguments["comments_file"])
-                output_file = os.path.abspath(arguments["output_file"])
-
-                try:
-                    with open(comments_file, "r") as file:
-                        comments = [line.strip() for line in file]
-
-                    similar_pair = find_most_similar_pair("/data/comments.txt", "/data/comments-similar.txt")
-
-
-                    with open(output_file, "w") as out_file:
-                        out_file.write("\n".join(similar_pair))
-
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Error finding similar comments: {str(e)}")
 
             elif function_name == "calculate_gold_ticket_sales":
                 database_file = os.path.abspath(arguments["database_file"])
