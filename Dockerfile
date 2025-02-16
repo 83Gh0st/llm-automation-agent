@@ -20,11 +20,13 @@ WORKDIR /app
 COPY . /app
 
 # Install Python dependencies system-wide
+# Install Python dependencies system-wide
 RUN uv pip install --system \
     fastapi uvicorn requests python-dotenv \
     pillow pytesseract openai tiktoken numpy pandas \
-    sentence-transformers sqlite-utils whisper \
-    duckdb markdown gitpython beautifulsoup4
+     sqlite-utils whisper \
+    duckdb markdown gitpython beautifulsoup4 \
+    opencv-python-headless  # Added this
 
 # Ensure `npx` works by installing Prettier globally
 RUN npm install -g prettier@3.4.2
